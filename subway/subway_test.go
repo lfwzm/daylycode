@@ -18,7 +18,7 @@ type SliceHeader struct {
 func TestHandleConn(t *testing.T) {
 	server := NewSubWayStation()
 	server.Ip = "127.0.0.1"
-	server.Port = "9090"
+	server.Port = "9050"
 	server.worker = &NormalHandler{}
 	err := server.GetListener()
 	if err != nil {
@@ -32,7 +32,7 @@ func TestHandleConn(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	head := &XpHead{}
+	head := &PassengerHead{}
 	head.IputNumber = 1
 	head.IsGiz = 2
 	Len := unsafe.Sizeof(*head)
@@ -57,11 +57,13 @@ func TestHandleConn(t *testing.T) {
 	//copy(data2[len(data):], bdata)
 
 	var data2 = make([]byte, 4096)
-	var head2 *XpHead = *(**XpHead)(unsafe.Pointer(&data2))
+	var head2 *PassengerHead = *(**PassengerHead)(unsafe.Pointer(&data2))
 	head2.Flag = 1
 	head2.Id = 1024
 	head2.IputNumber = 10000
 	head2.IsFirst = 1
+	head2.ListenTime = 3600 * 2
+	head2.IsBroken = 1
 	tolist := []byte("mytest")
 	listenlist := []byte("mytest")
 	copy(head2.StrPushList[:], tolist)
@@ -69,18 +71,36 @@ func TestHandleConn(t *testing.T) {
 	head2.BodyLen = int64(copy(data2[len(data):], bdata))
 	fmt.Println("head is: ", head2)
 
-	Len2, _ := conn.Write(data2)
-	fmt.Println("Len()TEST  is: ", Len2)
-	time.Sleep(1 * time.Second)
+	go func() {
+		for {
 
-	data3 := make([]byte, 4096)
-	fmt.Println("before read data")
-	_, err = conn.Read(data3)
-	if err != nil {
-		fmt.Println(err)
-		return
+			Len2, ok := conn.Write(data2)
+			if ok != nil {
+				fmt.Println("Len()TEST  is: ", Len2, ok)
+			}
+			fmt.Println("Len()TEST  is: ", Len2, ok)
+			time.Sleep(10 * time.Second)
+		}
+	}()
+
+	go func() {
+		for {
+			data3 := make([]byte, 4096)
+			fmt.Println("before read data")
+
+			_, err = conn.Read(data3)
+			if err != nil {
+				fmt.Println(err)
+				fmt.Println("write end")
+				conn.Close()
+				return
+			}
+
+			bodyret := data3[len(data):]
+			fmt.Println("+++++++++bodyret is: ", string(bodyret))
+		}
+	}()
+	for {
+		time.Sleep(1 * time.Second)
 	}
-
-	bodyret := data3[len(data):]
-	fmt.Println("+++++++++bodyret is: ", string(bodyret))
 }

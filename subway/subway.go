@@ -72,6 +72,12 @@ func (n *SubWayStation) AcceptAndHandle() error {
 		for {
 			mutex.Lock()
 			//从处理后数据map中获取数据
+
+			if len(DataListSingleton.Datas) == 0 {
+				time.Sleep(1 * time.Millisecond)
+				mutex.Unlock()
+				continue
+			}
 			for key, datas := range DataListSingleton.Datas {
 				value := datas
 				for {
@@ -107,6 +113,7 @@ func (n *SubWayStation) AcceptAndHandle() error {
 						}
 					}
 				}
+				delete(DataListSingleton.Datas, key)
 			}
 			mutex.Unlock()
 		}
@@ -210,7 +217,7 @@ func (n *NormalHandler) HandleConn(Conn *net.Conn) error {
 		fmt.Println("body is :", string(body))
 		var mybody Mydata
 		fmt.Println("body len is: ", head.BodyLen)
-		/*mybodydata, */ err = json.Unmarshal(body, &mybody)
+		err = json.Unmarshal(body, &mybody)
 
 		if err != nil {
 			fmt.Println(err)
@@ -236,12 +243,6 @@ func (n *NormalHandler) HandleConn(Conn *net.Conn) error {
 				for _, v := range DataListSingleton.Listeners[listenlist] {
 					Listener := v
 					if Listener.Nodeid == head.Id {
-						/*
-							//把原有的连接关闭。
-							if err := (*Listener.Conn).Close(); err != nil {
-								fmt.Println(err) //修改为记录日志
-							}
-						*/
 						Listener.Conn = Conn
 					}
 				}

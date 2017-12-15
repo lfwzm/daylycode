@@ -2,7 +2,7 @@ package subway
 
 import (
 	"container/list"
-	"encoding/json"
+	//"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -20,8 +20,9 @@ type DataList struct {
 	Listeners  map[string][]Listener
 }
 
+//存放接收者信息
 type Listener struct {
-	Nodeid int64
+	Nodeid int64 //接收者节点号
 	Conn   *net.Conn
 }
 
@@ -47,12 +48,12 @@ type SubWayStation struct {
 	Ip       string         //站点所在的ip
 	Port     string         //站点对应的端口号
 	listener net.Listener   //服务监听器
-	worker   StationHandler //接收到请求后的处理器 修改为接口
+	Worker   StationHandler //接收到请求后的处理器 修改为接口
 }
 
 func NewSubWayStation() *SubWayStation {
 	ret := SubWayStation{}
-	ret.worker = nil
+	ret.Worker = nil
 	return &ret
 }
 
@@ -106,7 +107,7 @@ func (n *SubWayStation) AcceptAndHandle() error {
 						if listener.Nodeid == id {
 							go func() {
 								fmt.Println(i)
-								(*listener.Conn).Write(retvalue)
+								//(*listener.Conn).Write(retvalue)
 
 							}()
 							value.Remove(data)
@@ -126,8 +127,8 @@ func (n *SubWayStation) AcceptAndHandle() error {
 
 			return err
 		}
-		fmt.Println(conn.LocalAddr())
-		go n.worker.HandleConn(&conn) //高并发情况下，会有些问题。修改问使用goroutine
+		//fmt.Println(conn.LocalAddr())
+		go n.Worker.HandleConn(&conn) //每个连接开一个协程处理
 		//处理每个连接请求
 
 	}
@@ -153,9 +154,9 @@ type PassengerHead struct {
 	Id            int64    //发送或者接收者的Id号
 	IputNumber    int64    //参数个数
 	BodyLen       int64    //消息体长度
+	IsLast        int64    //是否为同一个调用的最后一次
 	ListenTime    int64    //监听时长
 	IsBroken      int      //主动断开
-	IsFirst       int      // 是否第一次调用，1 是 0 不是 是第一次调用要注册对应的监听队列。
 }
 
 type Mydata struct {
@@ -163,42 +164,48 @@ type Mydata struct {
 	Phone string `json:Phone`
 }
 
+var doTime int64 = 0
+
+//需要解决何时关闭socket的问题。
 func (n *NormalHandler) HandleConn(Conn *net.Conn) error {
-	fmt.Println("connect ok")
+	//fmt.Println("connect ok")
+	//var readData []byte = make([]byte, 4096) //每次都new是否影响性能
+	err := (*Conn).SetDeadline(time.Now().Add(time.Duration(3600) * time.Second))
+	if err != nil {
+		//
+		fmt.Println("SetDeadline eror")
+		return err
+	}
 	for {
 		var readData []byte = make([]byte, 4096) //每次都new是否影响性能。
-
+		fmt.Println("before read")
 		Len, err := (*Conn).Read(readData)
 		if err != nil {
 			//
+			//fmt.Println("in HandleConn")
 			fmt.Println(err)
 			return err
 		}
-		fmt.Println("read ok")
+		fmt.Println("after read")
+		//fmt.Println("read ok")
 		var head *PassengerHead = *(**PassengerHead)(unsafe.Pointer(&readData))
 		headlen := unsafe.Sizeof(*head)
-		listenTime := head.ListenTime
-		err = (*Conn).SetDeadline(time.Now().Add(time.Duration(listenTime) * time.Second))
-		if err != nil {
-			//
-			fmt.Println("SetDeadline eror")
-			return err
-		}
+		//listenTime := head.ListenTime
+
 		if head.IsBroken == 1 {
-			fmt.Println("connect is Broken")
 			(*Conn).Close()
 			break
 		}
-		fmt.Println("**********data len is: ", Len)
+
 		if Len < (int)(headlen) {
-			fmt.Println("to short, Len is ", Len, " headlen is :", (int)(headlen))
-			return nil
+			//增加错误日志
+			continue
 		}
 
-		fmt.Println("InputNumber is ", head.IputNumber, " id is: ", head.Id)
 		tolist := string(head.StrPushList[:])
-
 		mutex.Lock()
+
+		//把数据插入队列请求
 		_, ok := DataListSingleton.Datas[tolist]
 		if !ok {
 			DataListSingleton.Datas[tolist] = list.New()
@@ -206,48 +213,54 @@ func (n *NormalHandler) HandleConn(Conn *net.Conn) error {
 		}
 
 		pushret := DataListSingleton.Datas[tolist].PushFront(readData)
-		if pushret != nil {
-			fmt.Println(pushret)
+		if pushret == nil {
+			//fmt.Println(pushret)
+			//增加出错处理
+			continue
 		}
 
-		fmt.Println("to list is: ", tolist)
-		bodyLen := head.BodyLen
+		//测试解析json格式的时候加上的
+		/*
+			err = json.Unmarshal(body, &mybody)
 
-		body := readData[int64(headlen) : int64(headlen)+bodyLen]
-		fmt.Println("body is :", string(body))
-		var mybody Mydata
-		fmt.Println("body len is: ", head.BodyLen)
-		err = json.Unmarshal(body, &mybody)
+			if err != nil {
+				fmt.Println(err)
+				return nil
+			}
 
-		if err != nil {
-			fmt.Println(err)
-			return nil
-		}
+			fmt.Println("body is :", mybody)
+			fmt.Println("body is :", string(body))
+		*/
 
-		fmt.Println("body is :", mybody)
-		fmt.Println("body is :", string(body))
+		listenlist := string(head.StrListenList[:])
+		_, ok = DataListSingleton.Listeners[listenlist]
+		//接收节点不存在则新增
+		if !ok {
 
-		if head.IsFirst == 1 {
-			listenlist := string(head.StrListenList[:])
-			fmt.Println("listen list is :", listenlist)
+			listener := Listener{Nodeid: head.Id, Conn: Conn}
+			DataListSingleton.Listeners[listenlist] = make([]Listener, 1)
+			DataListSingleton.Listeners[listenlist] = append(DataListSingleton.Listeners[listenlist], listener)
+			//fmt.Println("appand listener ok , listener is: ", listener, " len of DataListSingleton.Listeners[mytest] is ", len(DataListSingleton.Listeners[listenlist]))
+		} else {
 
-			_, ok := DataListSingleton.Listeners[listenlist]
-			//将节点加入到监听队列
-			if !ok {
-				listener := Listener{Nodeid: head.Id, Conn: Conn}
-				DataListSingleton.Listeners[listenlist] = make([]Listener, 1)
-				DataListSingleton.Listeners[listenlist] = append(DataListSingleton.Listeners[listenlist], listener)
-				fmt.Println("appand listener ok , listener is: ", listener, " len of DataListSingleton.Listeners[mytest] is ", len(DataListSingleton.Listeners[listenlist]))
-
-			} else {
-				for _, v := range DataListSingleton.Listeners[listenlist] {
-					Listener := v
-					if Listener.Nodeid == head.Id {
-						Listener.Conn = Conn
-					}
+			fundNodeid := false
+			for _, v := range DataListSingleton.Listeners[listenlist] {
+				Listener := v
+				if Listener.Nodeid == head.Id {
+					Listener.Conn = Conn
+					fundNodeid = true
 				}
 			}
+
+			//节点并不存在，增加节点
+			if !fundNodeid {
+				listener := Listener{Nodeid: head.Id, Conn: Conn}
+				DataListSingleton.Listeners[listenlist] = append(DataListSingleton.Listeners[listenlist], listener)
+			}
+
 		}
+
+		mutex.Unlock()
 		/*
 			if head.Flag == 1 {
 				sendto := string(head.StrListenList)
@@ -258,7 +271,7 @@ func (n *NormalHandler) HandleConn(Conn *net.Conn) error {
 				}
 			}
 		*/
-		mutex.Unlock()
+
 	}
 	return nil
 }

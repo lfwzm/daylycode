@@ -5,7 +5,10 @@ import (
 	//"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net"
+	"os"
+	"runtime"
 	"sync"
 	"time"
 	"unsafe"
@@ -99,14 +102,14 @@ func (n *SubWayStation) AcceptAndHandle() error {
 						//返回错误
 						continue
 					}
-					var i int64
+
 					//从监听列表中获取监听客户端
 					for _, v := range DataListSingleton.Listeners[key] {
-						i = i + 1
+
 						listener := v
 						if listener.Nodeid == id {
 							go func() {
-								fmt.Println(i)
+
 								//(*listener.Conn).Write(retvalue)
 
 							}()
@@ -152,7 +155,7 @@ type PassengerHead struct {
 	StrPushList   [32]byte //入参发送到对应的队列
 	Flag          int64    //0 入参， 1出参
 	Id            int64    //发送或者接收者的Id号
-	IputNumber    int64    //参数个数
+	IputNumber    int8     //参数个数
 	BodyLen       int64    //消息体长度
 	IsLast        int64    //是否为同一个调用的最后一次
 	ListenTime    int64    //监听时长
@@ -170,108 +173,192 @@ var doTime int64 = 0
 func (n *NormalHandler) HandleConn(Conn *net.Conn) error {
 	//fmt.Println("connect ok")
 	//var readData []byte = make([]byte, 4096) //每次都new是否影响性能
-	err := (*Conn).SetDeadline(time.Now().Add(time.Duration(3600) * time.Second))
+	defer func() {
+		if err := recover(); err != nil {
+			const size = 64 << 10
+			buf := make([]byte, size)
+			buf = buf[:runtime.Stack(buf, false)]
+			log.Println(string(buf))
+		}
+	}()
+
+	pwd, _ := os.Getwd()
+	file_path := pwd + "/src.log"
+	newfile, err := os.Create(file_path)
+	if err != nil {
+		panic(err)
+	}
+	log.SetOutput(newfile)
+	err = (*Conn).SetDeadline(time.Now().Add(time.Duration(3600) * time.Second))
 	if err != nil {
 		//
 		fmt.Println("SetDeadline eror")
 		return err
 	}
+	var ReadData = make([]byte, 4096)
+	var ReadfixData = make([]byte, 4096)
+	index := 0
 	for {
-		var readData []byte = make([]byte, 4096) //每次都new是否影响性能。
-		fmt.Println("before read")
-		Len, err := (*Conn).Read(readData)
+		var readDataTmp []byte = make([]byte, 4096) //每次都new是否影响性能。
+
+		Len, err := (*Conn).Read(readDataTmp)
 		if err != nil {
 			//
 			//fmt.Println("in HandleConn")
 			fmt.Println(err)
 			return err
 		}
-		fmt.Println("after read")
-		//fmt.Println("read ok")
-		var head *PassengerHead = *(**PassengerHead)(unsafe.Pointer(&readData))
-		headlen := unsafe.Sizeof(*head)
-		//listenTime := head.ListenTime
 
-		if head.IsBroken == 1 {
-			(*Conn).Close()
-			break
-		}
+		for i := 0; i < Len; i++ {
 
-		if Len < (int)(headlen) {
-			//增加错误日志
-			continue
-		}
-
-		tolist := string(head.StrPushList[:])
-		mutex.Lock()
-
-		//把数据插入队列请求
-		_, ok := DataListSingleton.Datas[tolist]
-		if !ok {
-			DataListSingleton.Datas[tolist] = list.New()
-			//listdata, _ := DataListSingleton.Datas[tolist]
-		}
-
-		pushret := DataListSingleton.Datas[tolist].PushFront(readData)
-		if pushret == nil {
-			//fmt.Println(pushret)
-			//增加出错处理
-			continue
-		}
-
-		//测试解析json格式的时候加上的
-		/*
-			err = json.Unmarshal(body, &mybody)
-
-			if err != nil {
-				fmt.Println(err)
-				return nil
-			}
-
-			fmt.Println("body is :", mybody)
-			fmt.Println("body is :", string(body))
-		*/
-
-		listenlist := string(head.StrListenList[:])
-		_, ok = DataListSingleton.Listeners[listenlist]
-		//接收节点不存在则新增
-		if !ok {
-
-			listener := Listener{Nodeid: head.Id, Conn: Conn}
-			DataListSingleton.Listeners[listenlist] = make([]Listener, 1)
-			DataListSingleton.Listeners[listenlist] = append(DataListSingleton.Listeners[listenlist], listener)
-			//fmt.Println("appand listener ok , listener is: ", listener, " len of DataListSingleton.Listeners[mytest] is ", len(DataListSingleton.Listeners[listenlist]))
-		} else {
-
-			fundNodeid := false
-			for _, v := range DataListSingleton.Listeners[listenlist] {
-				Listener := v
-				if Listener.Nodeid == head.Id {
-					Listener.Conn = Conn
-					fundNodeid = true
+			if index == 4096 {
+				fixLen := copy(ReadfixData, ReadData)
+				if fixLen != 4096 {
+					//报错
+					log.Println("fixLen is:", fixLen)
 				}
+				index = 0
+				Input := ReadfixData
+				go EquelHandle(Input, Conn, Len)
 			}
-
-			//节点并不存在，增加节点
-			if !fundNodeid {
-				listener := Listener{Nodeid: head.Id, Conn: Conn}
-				DataListSingleton.Listeners[listenlist] = append(DataListSingleton.Listeners[listenlist], listener)
-			}
-
+			//fmt.Println("index is: ", index, " i is : ", i)
+			ReadData[index] = readDataTmp[i]
+			index++
 		}
 
-		mutex.Unlock()
+		//当接收到的数据小于长度小于4096的时候
+		//copylen := copy(ReadData[index:], readDataTmp)
+
+		//在连接数量比较小的时候确实可以达到提高性能的作用。但是如果链接数量达到一定数量级的时候。需要考虑是否每一次read都开一个协程处理是否合理
 		/*
-			if head.Flag == 1 {
-				sendto := string(head.StrListenList)
-				_, ok := DataListSingleton.Listeners[listenlist]
-				if !ok {
-					fmt.Println("listener error")
+			Input := readDataTmp
+			log.Println("Inputnumber is :", Len)
+			go EquelHandle(Input, Conn, Len)
+		*/
+		/*
+			go func() {
+
+				var head *PassengerHead = *(**PassengerHead)(unsafe.Pointer(&readData))
+				headlen := unsafe.Sizeof(*head)
+				if head.IsBroken == 1 {
+					(*Conn).Close()
 					return
 				}
-			}
-		*/
 
+				//fmt.Println("Inputnumber is :", head.IputNumber)
+				if Len < (int)(headlen) {
+					//增加错误日志
+					return
+				}
+
+				tolist := string(head.StrPushList[:])
+				mutex.Lock()
+
+				//把数据插入队列请求
+				_, ok := DataListSingleton.Datas[tolist]
+				if !ok {
+					DataListSingleton.Datas[tolist] = list.New()
+				}
+
+				pushret := DataListSingleton.Datas[tolist].PushFront(readData)
+				if pushret == nil {
+					//fmt.Println(pushret)
+					//增加出错处理
+					return
+				}
+
+				listenlist := string(head.StrListenList[:])
+				_, ok = DataListSingleton.Listeners[listenlist]
+				//接收节点不存在则新增
+				if !ok {
+
+					listener := Listener{Nodeid: head.Id, Conn: Conn}
+					DataListSingleton.Listeners[listenlist] = make([]Listener, 1)
+					DataListSingleton.Listeners[listenlist] = append(DataListSingleton.Listeners[listenlist], listener)
+					//fmt.Println("appand listener ok , listener is: ", listener, " len of DataListSingleton.Listeners[mytest] is ", len(DataListSingleton.Listeners[listenlist]))
+				} else {
+
+					fundNodeid := false
+					for _, v := range DataListSingleton.Listeners[listenlist] {
+						Listener := v
+						if Listener.Nodeid == head.Id {
+							Listener.Conn = Conn
+							fundNodeid = true
+						}
+					}
+
+					//节点并不存在，增加节点
+					if !fundNodeid {
+						listener := Listener{Nodeid: head.Id, Conn: Conn}
+						DataListSingleton.Listeners[listenlist] = append(DataListSingleton.Listeners[listenlist], listener)
+					}
+
+				}
+				mutex.Unlock()
+			}()
+		*/
 	}
 	return nil
+}
+
+func EquelHandle(readData []byte, Conn *net.Conn, Len int) {
+
+	var head *PassengerHead = *(**PassengerHead)(unsafe.Pointer(&readData))
+	headlen := unsafe.Sizeof(*head)
+	/*
+		if head.IsBroken == 1 {
+			(*Conn).Close()
+			return
+		}
+	*/
+	log.Println("Inputnumber is :", readData)
+	if Len < (int)(headlen) {
+		//增加错误日志
+		return
+	}
+
+	tolist := string(head.StrPushList[:])
+	mutex.Lock()
+
+	//把数据插入队列请求
+	_, ok := DataListSingleton.Datas[tolist]
+	if !ok {
+		DataListSingleton.Datas[tolist] = list.New()
+	}
+
+	pushret := DataListSingleton.Datas[tolist].PushFront(readData)
+	if pushret == nil {
+		//fmt.Println(pushret)
+		//增加出错处理
+		return
+	}
+
+	listenlist := string(head.StrListenList[:])
+	_, ok = DataListSingleton.Listeners[listenlist]
+	//接收节点不存在则新增
+	if !ok {
+
+		listener := Listener{Nodeid: head.Id, Conn: Conn}
+		DataListSingleton.Listeners[listenlist] = make([]Listener, 1)
+		DataListSingleton.Listeners[listenlist] = append(DataListSingleton.Listeners[listenlist], listener)
+		//fmt.Println("appand listener ok , listener is: ", listener, " len of DataListSingleton.Listeners[mytest] is ", len(DataListSingleton.Listeners[listenlist]))
+	} else {
+
+		fundNodeid := false
+		for _, v := range DataListSingleton.Listeners[listenlist] {
+			Listener := v
+			if Listener.Nodeid == head.Id {
+				Listener.Conn = Conn
+				fundNodeid = true
+			}
+		}
+
+		//节点并不存在，增加节点
+		if !fundNodeid {
+			listener := Listener{Nodeid: head.Id, Conn: Conn}
+			DataListSingleton.Listeners[listenlist] = append(DataListSingleton.Listeners[listenlist], listener)
+		}
+
+	}
+	mutex.Unlock()
 }

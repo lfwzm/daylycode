@@ -125,8 +125,9 @@ func (pP *Passenger) SendData(pData *[]byte) error {
 			return errors.New("SendData: no Connect to station")
 		}
 		writeLen, err := (*pP.Conn).Write(sendData)
-		if err != nil {
+		if err != nil || writeLen != 4096 {
 			fmt.Println(err)
+			fmt.Println("writeLen is :", writeLen)
 			//增加写日志
 			pP.IsConnect = false
 			return err
@@ -135,16 +136,12 @@ func (pP *Passenger) SendData(pData *[]byte) error {
 		//fmt.Println("-----------in passenger sendData is :", string(sendData[HeadSize:]))
 		i = i + int(writeLen) - int(HeadSize)
 		//大部分情况下，客户端发给服务端的参数都是小于4094字节大小的。
-		//fmt.Println("i is: ", i, "data Len is:", dataLen)
-
 		if i < dataLen {
 			for index, _ := range sendData {
 				sendData[index] = 0
 			}
 		}
-		//fmt.Println("one sendData over")
 	}
-	//fmt.Println("sendData over")
 	return nil
 }
 

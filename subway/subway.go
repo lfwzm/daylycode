@@ -73,6 +73,7 @@ func (n *SubWayStation) AcceptAndHandle() error {
 	}
 
 	go func() {
+		//i := 0
 		for {
 			mutex.Lock()
 			//从处理后数据map中获取数据
@@ -82,6 +83,15 @@ func (n *SubWayStation) AcceptAndHandle() error {
 				mutex.Unlock()
 				continue
 			}
+			/*
+				if i%10 == 0 {
+					log.Println("DataListSingleton.Datas len is :", len(DataListSingleton.Datas))
+					log.Println("DataListSingleton.Listeners len is :", len(DataListSingleton.Listeners))
+				}
+				i++
+			*/
+			fmt.Println("DataListSingleton.Listeners len is :", len(DataListSingleton.Listeners))
+			fmt.Println("DataListSingleton.Datas len is :", len(DataListSingleton.Datas))
 			for key, datas := range DataListSingleton.Datas {
 				value := datas
 				for {
@@ -95,11 +105,15 @@ func (n *SubWayStation) AcceptAndHandle() error {
 					var head *PassengerHead = *(**PassengerHead)(unsafe.Pointer(&retvalue))
 
 					//listener := string(head.StrListenList[:])
+					fmt.Println("key is", key)
+
 					id := head.Id
+					fmt.Println("head id is:", id)
 
 					_, ok := DataListSingleton.Listeners[key]
 					if !ok {
 						//返回错误
+						fmt.Println("continue")
 						continue
 					}
 
@@ -108,9 +122,14 @@ func (n *SubWayStation) AcceptAndHandle() error {
 
 						listener := v
 						if listener.Nodeid == id {
+							fmt.Print("nodeid is: ", listener.Nodeid)
 							go func() {
-
-								//(*listener.Conn).Write(retvalue)
+								fmt.Println("in write Listener is : ", listener)
+								_, err := (*listener.Conn).Write(retvalue)
+								if err != nil {
+									//fmt.Println("subway wLen is:", wLen)
+									fmt.Println(err)
+								}
 
 							}()
 							value.Remove(data)
@@ -186,7 +205,7 @@ func (n *NormalHandler) HandleConn(Conn *net.Conn) error {
 	file_path := pwd + "/src.log"
 	newfile, err := os.Create(file_path)
 	if err != nil {
-		panic(err)
+		fmt.Println(err)
 	}
 	log.SetOutput(newfile)
 	err = (*Conn).SetDeadline(time.Now().Add(time.Duration(3600) * time.Second))
@@ -209,21 +228,24 @@ func (n *NormalHandler) HandleConn(Conn *net.Conn) error {
 			return err
 		}
 
+		//fmt.Println("read Len is:", Len)
 		for i := 0; i < Len; i++ {
 
+			//fmt.Println("index is: ", index, " i is : ", i)
+			ReadData[index] = readDataTmp[i]
+			index++
 			if index == 4096 {
 				fixLen := copy(ReadfixData, ReadData)
 				if fixLen != 4096 {
 					//报错
-					log.Println("fixLen is:", fixLen)
+					fmt.Println("fixLen is:", fixLen)
 				}
 				index = 0
 				Input := ReadfixData
-				go EquelHandle(Input, Conn, Len)
+				log.Println("Input is:", Input)
+				go EquelHandle(Input, Conn, fixLen)
 			}
-			//fmt.Println("index is: ", index, " i is : ", i)
-			ReadData[index] = readDataTmp[i]
-			index++
+
 		}
 
 		//当接收到的数据小于长度小于4096的时候
@@ -302,6 +324,7 @@ func (n *NormalHandler) HandleConn(Conn *net.Conn) error {
 }
 
 func EquelHandle(readData []byte, Conn *net.Conn, Len int) {
+	//fmt.Println("in EquelHandle")
 
 	var head *PassengerHead = *(**PassengerHead)(unsafe.Pointer(&readData))
 	headlen := unsafe.Sizeof(*head)
@@ -311,44 +334,51 @@ func EquelHandle(readData []byte, Conn *net.Conn, Len int) {
 			return
 		}
 	*/
-	log.Println("Inputnumber is :", readData)
+	//log.Println("Inputnumber is :", readData)
 	if Len < (int)(headlen) {
 		//增加错误日志
 		return
 	}
-
-	tolist := string(head.StrPushList[:])
 	mutex.Lock()
+	if head.StrPushList[0] != 0 {
+		tolist := string(head.StrPushList[:])
+		//fmt.Println("tolist is:", tolist)
+		//把数据插入队列请求
+		_, ok := DataListSingleton.Datas[tolist]
+		if !ok {
+			DataListSingleton.Datas[tolist] = list.New()
+			fmt.Println("create a new list")
+		}
 
-	//把数据插入队列请求
-	_, ok := DataListSingleton.Datas[tolist]
-	if !ok {
-		DataListSingleton.Datas[tolist] = list.New()
-	}
-
-	pushret := DataListSingleton.Datas[tolist].PushFront(readData)
-	if pushret == nil {
-		//fmt.Println(pushret)
-		//增加出错处理
-		return
+		pushret := DataListSingleton.Datas[tolist].PushFront(readData)
+		if pushret == nil {
+			//fmt.Println(pushret)
+			//增加出错处理
+			log.Println("DataListSingleton.Datas[", tolist, "].PushFront(", readData, ") failed")
+			return
+		}
 	}
 
 	listenlist := string(head.StrListenList[:])
-	_, ok = DataListSingleton.Listeners[listenlist]
+	//fmt.Println("listenlist is:", listenlist)
+	_, ok := DataListSingleton.Listeners[listenlist]
 	//接收节点不存在则新增
 	if !ok {
 
 		listener := Listener{Nodeid: head.Id, Conn: Conn}
+		fmt.Println("Listener is:", listener)
 		DataListSingleton.Listeners[listenlist] = make([]Listener, 1)
 		DataListSingleton.Listeners[listenlist] = append(DataListSingleton.Listeners[listenlist], listener)
 		//fmt.Println("appand listener ok , listener is: ", listener, " len of DataListSingleton.Listeners[mytest] is ", len(DataListSingleton.Listeners[listenlist]))
 	} else {
 
 		fundNodeid := false
-		for _, v := range DataListSingleton.Listeners[listenlist] {
-			Listener := v
+		for i, Listener := range DataListSingleton.Listeners[listenlist] {
+			//Listener := v
+			fmt.Println("Listener is:", Listener)
 			if Listener.Nodeid == head.Id {
-				Listener.Conn = Conn
+				//Listener.Conn = Conn
+				DataListSingleton.Listeners[listenlist][i].Conn = Conn
 				fundNodeid = true
 			}
 		}
@@ -357,6 +387,7 @@ func EquelHandle(readData []byte, Conn *net.Conn, Len int) {
 		if !fundNodeid {
 			listener := Listener{Nodeid: head.Id, Conn: Conn}
 			DataListSingleton.Listeners[listenlist] = append(DataListSingleton.Listeners[listenlist], listener)
+			fmt.Println("add new conn", listener)
 		}
 
 	}

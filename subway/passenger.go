@@ -132,6 +132,7 @@ func (pP *Passenger) SendData(pData *[]byte) error {
 			pP.IsConnect = false
 			return err
 		}
+		//fmt.Println("sendData ok")
 		//fmt.Println("-----------in passenger writeLen is :", writeLen)
 		//fmt.Println("-----------in passenger sendData is :", string(sendData[HeadSize:]))
 		i = i + int(writeLen) - int(HeadSize)
@@ -146,6 +147,26 @@ func (pP *Passenger) SendData(pData *[]byte) error {
 }
 
 //接收数据
+func (pP *Passenger) GetSubwayData() (err error, pData []byte, len int) {
+	if pP == nil {
+		return PoitNilError, nil, 0
+	}
+
+	pData = make([]byte, 4096)
+
+	if pP.IsConnect {
+		//fmt.Println("before get data")
+		readLen, err := (*pP.Conn).Read(pData)
+		if err != nil {
+			fmt.Println("read failed")
+			return err, nil, 0
+		} else {
+			//fmt.Println("read ok")
+			return err, pData, readLen
+		}
+	}
+	return errors.New("Connect is close"), nil, 0
+}
 
 //主动断开连接
 

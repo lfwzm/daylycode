@@ -67,6 +67,15 @@ func (n *SubWayStation) GetListener() (err error) {
 }
 
 func (n *SubWayStation) AcceptAndHandle() error {
+	defer func() {
+		if err := recover(); err != nil {
+			const size = 64 << 10
+			buf := make([]byte, size)
+			buf = buf[:runtime.Stack(buf, false)]
+			log.Println(string(buf))
+			time.Sleep(60 * time.Second)
+		}
+	}()
 
 	if n == nil || n.listener == nil {
 		return errors.New(n.Name + ".listener is nil")
@@ -94,9 +103,10 @@ func (n *SubWayStation) AcceptAndHandle() error {
 			fmt.Println("DataListSingleton.Datas len is :", len(DataListSingleton.Datas))
 			for key, datas := range DataListSingleton.Datas {
 				value := datas
+				data := value.Front()
 				for {
 					//列表中无数据退出循环
-					if value.Len() == 0 {
+					if value.Len() == 0 || data == nil {
 						break
 					}
 					//获取第一个数据
@@ -112,31 +122,48 @@ func (n *SubWayStation) AcceptAndHandle() error {
 
 					_, ok := DataListSingleton.Listeners[key]
 					if !ok {
-						//返回错误
-						fmt.Println("continue")
-						continue
+						//返回错误,不能用
+						//data = data.Next()
+						//需要增加出错处理
+						break
 					}
 
 					//从监听列表中获取监听客户端
+					iHandleFlag := false
 					for _, v := range DataListSingleton.Listeners[key] {
 
 						listener := v
+						//找到接收数据的连接
 						if listener.Nodeid == id {
-							fmt.Print("nodeid is: ", listener.Nodeid)
+
 							go func() {
-								fmt.Println("in write Listener is : ", listener)
+								//log.Println("in write Listener is : ", listener)
 								_, err := (*listener.Conn).Write(retvalue)
 								if err != nil {
-									//fmt.Println("subway wLen is:", wLen)
-									fmt.Println(err)
+									log.Println(err)
 								}
 
 							}()
-							value.Remove(data)
+							iHandleFlag = true
+							break
 						}
+
 					}
+					//如果数据已经处理
+					if iHandleFlag == true {
+						data2 := data.Next()
+						DataListSingleton.Datas[key].Remove(data)
+						data = data2
+
+					} else {
+						data = data.Next()
+					}
+
 				}
-				delete(DataListSingleton.Datas, key)
+				//如果有为处理的数据，不能删除
+				if DataListSingleton.Datas[key].Len() == 0 {
+					delete(DataListSingleton.Datas, key)
+				}
 			}
 			mutex.Unlock()
 		}
@@ -169,7 +196,7 @@ type ParaInfo struct {
 //乘客头信息
 type PassengerHead struct {
 	IsGiz         int64    //是否需要压缩
-	StrRuntime    [32]byte //执行时间 （格式化，或者测试下timestamp是否为定长）
+	iRuntime      int64    //执行开始时间
 	StrListenList [32]byte //从某个队列获取返回结果
 	StrPushList   [32]byte //入参发送到对应的队列
 	Flag          int64    //0 入参， 1出参
@@ -217,21 +244,23 @@ func (n *NormalHandler) HandleConn(Conn *net.Conn) error {
 	var ReadData = make([]byte, 4096)
 	var ReadfixData = make([]byte, 4096)
 	index := 0
+	bConnectClose := true
 	for {
+		if bConnectClose == false {
+			return errors.New("connect is close")
+		}
 		var readDataTmp []byte = make([]byte, 4096) //每次都new是否影响性能。
 
 		Len, err := (*Conn).Read(readDataTmp)
 		if err != nil {
-			//
-			//fmt.Println("in HandleConn")
 			fmt.Println(err)
+			if bConnectClose == false {
+				(*Conn).Close()
+			}
 			return err
 		}
 
-		//fmt.Println("read Len is:", Len)
 		for i := 0; i < Len; i++ {
-
-			//fmt.Println("index is: ", index, " i is : ", i)
 			ReadData[index] = readDataTmp[i]
 			index++
 			if index == 4096 {
@@ -242,8 +271,8 @@ func (n *NormalHandler) HandleConn(Conn *net.Conn) error {
 				}
 				index = 0
 				Input := ReadfixData
-				log.Println("Input is:", Input)
-				go EquelHandle(Input, Conn, fixLen)
+				//log.Println("Input is:", Input)
+				go EquelHandle(Input, Conn, fixLen, &bConnectClose)
 			}
 
 		}
@@ -323,22 +352,46 @@ func (n *NormalHandler) HandleConn(Conn *net.Conn) error {
 	return nil
 }
 
-func EquelHandle(readData []byte, Conn *net.Conn, Len int) {
-	//fmt.Println("in EquelHandle")
-
-	var head *PassengerHead = *(**PassengerHead)(unsafe.Pointer(&readData))
-	headlen := unsafe.Sizeof(*head)
-	/*
-		if head.IsBroken == 1 {
-			(*Conn).Close()
-			return
-		}
-	*/
-	//log.Println("Inputnumber is :", readData)
-	if Len < (int)(headlen) {
-		//增加错误日志
+func EquelHandle(readData []byte, Conn *net.Conn, Len int, isConnect *bool) {
+	if Conn == nil || isConnect == nil {
 		return
 	}
+	defer func() {
+		if err := recover(); err != nil {
+			const size = 64 << 10
+			buf := make([]byte, size)
+			buf = buf[:runtime.Stack(buf, false)]
+			log.Println(string(buf))
+			time.Sleep(60 * time.Second)
+		}
+	}()
+
+	if *isConnect == false {
+		return
+	}
+	var head *PassengerHead = *(**PassengerHead)(unsafe.Pointer(&readData))
+	listenlist := string(head.StrListenList[:])
+	if head.IsBroken == 1 {
+		mutex.Lock()
+		defer mutex.Unlock()
+		for i, Listener := range DataListSingleton.Listeners[listenlist] {
+			//fmt.Println("Lisenter.nodeid is:", Listener.Nodeid, ", head id is:", head.Id)
+			if Listener.Nodeid == head.Id {
+				if Listener.Conn == Conn {
+					DataListSingleton.Listeners[listenlist] = append(DataListSingleton.Listeners[listenlist][:i-1], DataListSingleton.Listeners[listenlist][i+1:]...)
+					if err := (*Conn).Close(); err != nil {
+						log.Println(err)
+					}
+					*isConnect = false
+					//fmt.Println("Listenerlist is:", DataListSingleton.Listeners[listenlist])
+					return
+				}
+			}
+		}
+
+		return
+	}
+
 	mutex.Lock()
 	if head.StrPushList[0] != 0 {
 		tolist := string(head.StrPushList[:])
@@ -347,14 +400,13 @@ func EquelHandle(readData []byte, Conn *net.Conn, Len int) {
 		_, ok := DataListSingleton.Datas[tolist]
 		if !ok {
 			DataListSingleton.Datas[tolist] = list.New()
-			fmt.Println("create a new list")
 		}
 
 		pushret := DataListSingleton.Datas[tolist].PushFront(readData)
 		if pushret == nil {
 			//fmt.Println(pushret)
 			//增加出错处理
-			log.Println("DataListSingleton.Datas[", tolist, "].PushFront(", readData, ") failed")
+			//log.Println("DataListSingleton.Datas[", tolist, "].PushFront(", readData, ") failed")
 			return
 		}
 	}
@@ -366,7 +418,7 @@ func EquelHandle(readData []byte, Conn *net.Conn, Len int) {
 	if !ok {
 
 		listener := Listener{Nodeid: head.Id, Conn: Conn}
-		fmt.Println("Listener is:", listener)
+		//fmt.Println("Listener is:", listener)
 		DataListSingleton.Listeners[listenlist] = make([]Listener, 1)
 		DataListSingleton.Listeners[listenlist] = append(DataListSingleton.Listeners[listenlist], listener)
 		//fmt.Println("appand listener ok , listener is: ", listener, " len of DataListSingleton.Listeners[mytest] is ", len(DataListSingleton.Listeners[listenlist]))
@@ -375,7 +427,7 @@ func EquelHandle(readData []byte, Conn *net.Conn, Len int) {
 		fundNodeid := false
 		for i, Listener := range DataListSingleton.Listeners[listenlist] {
 			//Listener := v
-			fmt.Println("Listener is:", Listener)
+			//fmt.Println("Listener is:", Listener)
 			if Listener.Nodeid == head.Id {
 				//Listener.Conn = Conn
 				DataListSingleton.Listeners[listenlist][i].Conn = Conn
@@ -387,7 +439,7 @@ func EquelHandle(readData []byte, Conn *net.Conn, Len int) {
 		if !fundNodeid {
 			listener := Listener{Nodeid: head.Id, Conn: Conn}
 			DataListSingleton.Listeners[listenlist] = append(DataListSingleton.Listeners[listenlist], listener)
-			fmt.Println("add new conn", listener)
+			//fmt.Println("add new conn", listener)
 		}
 
 	}

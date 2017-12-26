@@ -168,6 +168,25 @@ func (pP *Passenger) GetSubwayData() (err error, pData []byte, len int) {
 	return errors.New("Connect is close"), nil, 0
 }
 
-//主动断开连接
+//主动断开连接,
+func (pP *Passenger) DisConnectStation() (err error) {
+	if pP == nil {
+		return PoitNilError
+	}
+
+	if pP.IsConnect == false {
+		return nil
+	}
+
+	var testData []byte = []byte("break")
+	pP.Head.IsBroken = 1
+	err = pP.SendData(&testData)
+	if err != nil {
+		return err
+	}
+
+	pP.IsConnect = false
+	return (*pP.Conn).Close()
+}
 
 //发送心跳数据
